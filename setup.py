@@ -13,7 +13,7 @@ with open(ver_file) as f:
 
 DISTNAME = 'ai-minimization-toolkit'
 DESCRIPTION = 'A toolkit for minimizing the data required to apply machine learning'
-with codecs.open('README.rst', encoding='utf-8-sig') as f:
+with codecs.open('README.md', encoding='utf-8-sig') as f:
     LONG_DESCRIPTION = f.read()
 MAINTAINER = 'A. Goldsteen'
 MAINTAINER_EMAIL = 'abigailt@il.ibm.com'

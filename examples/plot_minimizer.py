@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 from minimization import GeneralizeToRepresentative
 from sklearn.tree import DecisionTreeClassifier
 
-X = np.arange(50, dtype=np.float).reshape(-1, 1)
+X = np.arange(50, dtype=np.float64).reshape(-1, 1)
 X /= 50
 y = np.zeros(X.shape[0])
 for i in range(X.shape[0]):

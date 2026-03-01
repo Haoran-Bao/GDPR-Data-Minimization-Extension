@@ -157,11 +157,14 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
         # take into account that estimator, X, y, cells, features may be None
 
         if X is not None and y is not None:
+            self._fit_input_was_df = isinstance(X, pd.DataFrame)
             X, y = check_X_y(X, y, accept_sparse=True)
             self.n_features_ = X.shape[1]
         elif self.features:
+            self._fit_input_was_df = False
             self.n_features_ = len(self.features)
         else:
+            self._fit_input_was_df = False
             self.n_features_ = 0
 
         if self.features:
@@ -201,6 +204,9 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
             self.dt_ = DecisionTreeClassifier(random_state=0, min_samples_split=2,
                                               min_samples_leaf=1)
             self.dt_.fit(X_train, y_train)
+            # support count for each node id
+            paths = self.dt_.decision_path(X_train).toarray()
+            self.node_support_ = paths.sum(axis=0).astype(int)
             self._calculate_cells()
             self._modify_cells()
             nodes = self._get_nodes_level(0)
@@ -208,7 +214,10 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
             # self.cells_ currently holds the generalization created from the tree leaves
 
             # apply generalizations to test data
-            generalized = self._generalize(X_test, nodes, self.cells_, self.cells_by_id_)
+            generalized = self._generalize(
+                X_test, nodes, self.cells_, self.cells_by_id_,
+                return_df=self._fit_input_was_df
+            )
 
             # check accuracy
             accuracy = self.estimator.score(generalized, y_test)
@@ -221,8 +230,10 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
                     nodes = self._get_nodes_level(level)
                     self._calculate_level_cells(level)
                     self._attach_cells_representatives(X_train, y_train, nodes)
-                    generalized = self._generalize(X_test, nodes, self.cells_,
-                                                   self.cells_by_id_)
+                    generalized = self._generalize(
+                        X_test, nodes, self.cells_, self.cells_by_id_,
+                        return_df=self._fit_input_was_df
+                    )
                     accuracy = self.estimator.score(generalized, y_test)
                     print('Level: %d, accuracy: %f' % (level, accuracy))
                     level+=1
@@ -236,8 +247,10 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
                                                                                feature_data)
                     if not removed_feature:
                         break
-                    generalized = self._generalize(X_test, nodes, self.cells_,
-                                                   self.cells_by_id_)
+                    generalized = self._generalize(
+                        X_test, nodes, self.cells_, self.cells_by_id_,
+                        return_df=self._fit_input_was_df
+                    )
                     accuracy = self.estimator.score(generalized, y_test)
                     print('Removed feature: %s, accuracy: %f' % (removed_feature, accuracy))
 
@@ -245,6 +258,8 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
 
             # calculate iLoss
             self.ncp_ = self._calculate_ncp(X_test, self.generalizations_, feature_data)
+            self.feature_data_ = feature_data
+            self.leaf_representatives_ = {cell['id']: cell['representative'] for cell in self.cells_}
 
         # Return the transformer
         return self
@@ -271,6 +286,8 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
         check_is_fitted(self, ['cells', 'features'], msg=msg)
 
         # Input validation
+        input_is_df = isinstance(X, pd.DataFrame)
+        input_columns = list(X.columns) if input_is_df else None
         X = check_array(X, accept_sparse=True)
         if X.shape[1] != self.n_features_ and self.n_features_ != 0:
             raise ValueError('Shape of input is different from what was seen'
@@ -281,6 +298,8 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
 
         representatives = pd.DataFrame(columns=self._features)  # only columns
         generalized = pd.DataFrame(X, columns=self._features, copy=True)  # original data
+        # ensure assignments are dtype-compatible
+        generalized = generalized.astype(float)
         mapped = np.zeros(X.shape[0])  # to mark records we already mapped
 
         # iterate over cells (leaves in decision tree)
@@ -305,9 +324,104 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
             # replace the values in the representative columns with the representative
             # values (leaves others untouched)
             if not representatives.columns.empty:
-                generalized.loc[indexes, representatives.columns] = representatives.loc[i].values
+                generalized.loc[indexes, representatives.columns] = \
+                    representatives.loc[i].astype(float).values
 
+        if input_is_df:
+            if input_columns is not None and len(input_columns) == len(generalized.columns):
+                generalized.columns = input_columns
+            return generalized
         return generalized.to_numpy()
+
+    def get_leaf_regions(self, categorical_features=None, min_leaf_support=1):
+        """Extract leaf regions from the learned tree.
+
+        Parameters
+        ----------
+        categorical_features : dict, optional
+            Mapping {feature: [allowed_values]} used for categorical features.
+        min_leaf_support : int, optional
+            Minimum support required to keep a leaf.
+
+        Returns
+        -------
+        leaf_regions : dict
+            Mapping {leaf_id: Region}.
+        """
+        from .distillation import extract_leaf_regions
+        check_is_fitted(self, ['cells_', 'feature_data_'], msg='Call fit before get_leaf_regions')
+        return extract_leaf_regions(
+            self.cells_,
+            self._features,
+            self.feature_data_,
+            getattr(self, 'node_support_', None),
+            categorical_features=categorical_features,
+            min_leaf_support=min_leaf_support,
+        )
+
+    def distill_teacher(self, samples_per_leaf=50, student_type="logreg",
+                        min_leaf_support=1, temperature=1.0, seed=0,
+                        categorical_features=None, verbose=True):
+        """Run the distillation workflow and return a trained student.
+
+        Parameters
+        ----------
+        samples_per_leaf : int, optional
+            Number of synthetic samples per leaf.
+        student_type : {'logreg', 'mlp'}, optional
+            Student model type.
+        min_leaf_support : int, optional
+            Minimum support required to keep a leaf.
+        temperature : float, optional
+            Temperature for probability smoothing.
+        seed : int, optional
+            Random seed.
+        categorical_features : dict, optional
+            Mapping {feature: [allowed_values]} used for categorical features.
+        verbose : bool, optional
+            If True, prints progress.
+
+        Returns
+        -------
+        student : estimator
+            Trained student model.
+        encoder : OneHotEncoder or None
+            Encoder used for categorical features.
+        metrics : dict
+            Agreement metrics between student and teacher distributions.
+        """
+        from .distillation import build_leaf_dataset, train_student
+        check_is_fitted(self, ['cells_', 'feature_data_'], msg='Call fit before distill_teacher')
+
+        leaf_regions = self.get_leaf_regions(
+            categorical_features=categorical_features,
+            min_leaf_support=min_leaf_support,
+        )
+        if verbose:
+            print("Leaves kept for distillation: %d" % len(leaf_regions))
+
+        leaf_dataset = build_leaf_dataset(
+            leaf_regions,
+            self.leaf_representatives_,
+            self.estimator,
+            self.feature_data_,
+            samples_per_leaf=samples_per_leaf,
+            temperature=temperature,
+            seed=seed,
+            categorical_features=categorical_features,
+            verbose=verbose,
+        )
+
+        student, encoder, metrics = train_student(
+            leaf_dataset,
+            self._features,
+            self.feature_data_,
+            student_type=student_type,
+            categorical_features=categorical_features,
+            seed=seed,
+            verbose=verbose,
+        )
+        return student, encoder, metrics
 
     def _get_record_indexes_for_cell(self, X, cell, mapped):
         return [i for i, x in enumerate(X) if not mapped.item(i) and
@@ -322,7 +436,8 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
                 #TODO: exception - feature not defined
                 pass
         # Mark as mapped
-        mapped.itemset(i, 1)
+        # mapped.itemset(i, 1)
+        mapped[i] = 1
         return True
 
     def _cell_contains_numeric(self, f, range, x):
@@ -486,13 +601,17 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
                 cell['representative'][feature] = row[feature].item()
 
     def _find_sample_nodes(self, samples, nodes):
+        if isinstance(samples, pd.DataFrame):
+            samples = samples.to_numpy()
         paths = self.dt_.decision_path(samples).toarray()
         nodeSet = set(nodes)
         return [(list(set([i for i, v in enumerate(p) if v == 1]) & nodeSet))[0] for p in paths]
 
-    def _generalize(self, data, level_nodes, cells, cells_by_id):
+    def _generalize(self, data, level_nodes, cells, cells_by_id, return_df=False):
         representatives = pd.DataFrame(columns=self._features) # empty except for columns
         generalized = pd.DataFrame(data, columns=self._features, copy=True) # original data
+        # ensure assignments are dtype-compatible
+        generalized = generalized.astype(float)
         mapping_to_cells = self._map_to_cells(generalized, level_nodes, cells_by_id)
         # iterate over cells (leaves in decision tree)
         for i in range(len(cells)):
@@ -514,8 +633,11 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
             # replaces the values in the representative columns with the representative values
             # (leaves others untouched)
             if not representatives.columns.empty:
-                generalized.loc[indexes, representatives.columns] = representatives.loc[i].values
+                generalized.loc[indexes, representatives.columns] = \
+                    representatives.loc[i].astype(float).values
 
+        if return_df:
+            return generalized
         return generalized.to_numpy()
 
     def _map_to_cells(self, samples, nodes, cells_by_id):
@@ -556,7 +678,10 @@ class GeneralizeToRepresentative(BaseEstimator, MetaEstimatorMixin, TransformerM
                     new_cells = copy.deepcopy(self.cells_)
                     cells_by_id = copy.deepcopy(self.cells_by_id_)
                     GeneralizeToRepresentative._remove_feature_from_cells(new_cells, cells_by_id, feature)
-                    generalized = self._generalize(samples, nodes, new_cells, cells_by_id)
+                    generalized = self._generalize(
+                        samples, nodes, new_cells, cells_by_id,
+                        return_df=self._fit_input_was_df
+                    )
                     accuracy = self.estimator.score(generalized, labels)
                     feature_ncp = feature_ncp / accuracy
                 if feature_ncp < range_min:

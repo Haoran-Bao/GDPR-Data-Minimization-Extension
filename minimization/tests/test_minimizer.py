@@ -1,17 +1,10 @@
-import pytest
 import numpy as np
-
-from sklearn.datasets import load_iris, load_boston
 
 from minimization import GeneralizeToRepresentative
 from sklearn.tree import DecisionTreeClassifier
 
 
-@pytest.fixture
-def data():
-    return load_boston(return_X_y=True)
-
-def test_minimizer_params(data):
+def test_minimizer_params():
     # Assume two features, age and height, and boolean label
     cells = [{"id": 1, "ranges": {"age": {"start": None, "end": 38}, "height": {"start": None, "end": 170}}, "label": 0,
               "representative": {"age": 26, "height": 149}},
@@ -38,7 +31,7 @@ def test_minimizer_params(data):
     transformed = gen.transform(X)
     print(transformed)
 
-def test_minimizer_fit(data):
+def test_minimizer_fit():
     features = ['age', 'height']
     # numpy arrays do not support mixed types, unless they are structured arrays
     # so seems that categorical to one hot mapping should be done outside...
