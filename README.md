@@ -6,8 +6,7 @@ This repository provides a univariate decision tree based dataset generalizer an
 
 ![image info](./diagram.png)
 
-The original framework is a univariate decision tree based dataset generalizer.
-
+The original framework follows the univariate decision-tree-based data minimization method proposed by Goldsteen et al. (2020).
 
 We added two key features:
 
@@ -31,7 +30,7 @@ At this point, you can already do inference as:
 
 `teacher( generalize(x) )`
 
-### Phase B — Data distillation 
+### Phase B — Data distillation
 
 8. Extract leaf regions from the generalizer (feature ranges + support).
 9. For each leaf, sample `K` synthetic points inside the region.
@@ -44,7 +43,7 @@ After distillation, inference becomes:
 
 `student( generalize(x) )`
 
-### Phase C — MIA audit 
+### Phase C — MIA audit
 
 14. Generate **in-like probes** from inside leaf regions.
 15. Generate **out-like probes** near region boundaries or broader ranges.
@@ -52,8 +51,6 @@ After distillation, inference becomes:
 17. Compute robustness scores (`flip_rate` or `min_delta`).
 18. Evaluate attack metrics (AUC, best accuracy, TPR@FPR=1%).
 19. Report PASS/FAIL without changing the model (audit is decoupled).
-
-
 
 ## Key Privacy/Security Intuition
 
@@ -154,10 +151,14 @@ python examples/experiment_pipeline_iris.py --samples_per_leaf 100 --student_typ
 
 ## References
 
-[1] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. 
+[0] Abigail Goldsteen, Gilad Ezov, Ron Shmelkin, Micha Moffie, and Ariel Farkash.
+Data Minimization for GDPR Compliance in Machine Learning Models.
+arXiv:2008.04113, 2020.
+
+[1] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean.
 Distilling the Knowledge in a Neural Network.
 NeurIPS Deep Learning Workshop, 2015.
 
-[2] Christopher A. Choquette-Choo, Florian Tramer, Nicholas Carlini, and Nicolas Papernot. 
-Label-Only Membership Inference Attacks. 
+[2] Christopher A. Choquette-Choo, Florian Tramer, Nicholas Carlini, and Nicolas Papernot.
+Label-Only Membership Inference Attacks.
 Proceedings of the 38th International Conference on Machine Learning (ICML), 2021.
